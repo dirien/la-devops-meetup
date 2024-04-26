@@ -1,0 +1,163 @@
+name: la-devops-meetup
+runtime: yaml
+description: A Pulumi program to deploy multiple k8s cluster and register them to the Akuity platform
+
+variables:
+  clusterName: "la-devops-meetup"
+  akpInstanceName: "la-devops-meetup"
+
+  gkeKubeConfigProd:
+    fn::gcp:organizations/getClientConfig:getClientConfig:
+
+resources:
+
+  do-provider:
+    type: pulumi:providers:digitalocean
+    properties:
+      token: ${digitalocean:token}
+  gke-provider:
+    type: pulumi:providers:gcp
+    properties:
+      project: ${gcp:project}
+  
+  do_cluster-dev:
+    type: digitalocean:KubernetesCluster
+    properties:
+      name: ${clusterName}-dev
+      region: "nyc3"
+      version: "1.29.1-do.0"
+      destroyAllAssociatedResources: true
+      nodePool:
+        name: "default"
+        size: "s-2vcpu-2gb"
+        autoScale: true
+        maxNodes: 3
+        minNodes: 1
+    options:
+      provider: ${do-provider}
+  
+  do_cluster-staging:
+    type: digitalocean:KubernetesCluster
+    properties:
+      name: ${clusterName}-staging
+      region: "sfo3"
+      version: "1.28.6-do.0"
+      destroyAllAssociatedResources: true
+      nodePool:
+        name: "default"
+        size: "s-2vcpu-2gb"
+        autoScale: true
+        maxNodes: 3
+        minNodes: 1
+    options:
+      provider: ${do-provider}
+
+  serviceAccount:
+    type: gcp:serviceaccount:Account
+    properties:
+      accountId: service-account-id
+      displayName: Service Account
+  
+  gke-cluster-prod:
+    type: gcp:container:Cluster
+    properties:
+      name: ${clusterName}-prod
+      deletionProtection: false
+      location: us-central1-a
+      initialNodeCount: 3
+      nodeConfig:
+        machineType: e2-standard-4
+        serviceAccount: ${serviceAccount.email}
+        oauthScopes:
+          - https://www.googleapis.com/auth/cloud-platform
+    options:
+      provider: ${gke-provider} 
+
+
+  akuity-provider:
+    type: pulumi:providers:akp
+    properties:
+      orgName: ${akp:orgName}
+      apiKeyId: ${akp:apiKeyId}
+      apiKeySecret: ${akp:apiKeySecret}
+  
+  akuity-instance:
+    type: akp:Instance
+    properties:
+      name: ${akpInstanceName}
+      argocd:
+        spec:
+          instanceSpec:
+            declarativeManagementEnabled: true
+          version: v2.10.7
+    options:
+      provider: ${akuity-provider}
+
+  akuity-cluster-dev:
+    type: akp:Cluster
+    properties:
+      name: "my-cluster-dev"
+      namespace: "akuity"
+      instanceId : ${akuity-instance.id}
+      kubeConfig:
+        host: ${do_cluster-dev.kubeConfigs[0].host}
+        token: ${do_cluster-dev.kubeConfigs[0].token}
+        clusterCaCertificate:
+          fn::fromBase64: ${do_cluster-dev.kubeConfigs[0].clusterCaCertificate}
+      labels:
+        env: dev
+        cloud: digitalocean
+      spec:
+        description: |
+          This is a dev cluster on digitalocean
+          Created with Pulumi IaC
+        data:
+          size: small
+    options:
+      provider: ${akuity-provider}
+
+  akuity-cluster-staging:
+    type: akp:Cluster
+    properties:
+      name: "my-cluster-staging"
+      namespace: "akuity"
+      instanceId : ${akuity-instance.id}
+      kubeConfig:
+        host: ${do_cluster-staging.kubeConfigs[0].host}
+        token: ${do_cluster-staging.kubeConfigs[0].token}
+        clusterCaCertificate:
+          fn::fromBase64: ${do_cluster-staging.kubeConfigs[0].clusterCaCertificate}
+      labels:
+        env: staging
+        cloud: digitalocean
+      spec:
+        description: | 
+          This is a staging cluster on digitalocean
+          Created with Pulumi IaC
+        data:
+          size: small
+    options:
+      provider: ${akuity-provider}
+
+  akuity-cluster-prod:
+    type: akp:Cluster
+    properties:
+      name: "my-cluster-prod"
+      namespace: "akuity"
+      instanceId : ${akuity-instance.id}
+      kubeConfig:
+        host: ${gke-cluster-prod.endpoint}
+        token: ${gkeKubeConfigProd.accessToken}
+        clusterCaCertificate:
+          fn::fromBase64: ${gke-cluster-prod.masterAuth.clusterCaCertificate}
+      labels:
+        env: prod
+        cloud: gcp
+      spec:
+        description: |
+          This is a prod cluster on gcp
+          Created with Pulumi IaC
+        data:
+          size: large
+    options:
+      provider: ${akuity-provider}
